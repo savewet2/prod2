@@ -1,0 +1,185 @@
+-- Выбор базы данных для работы
+use dbkatya;
+
+-- Основной запрос на выборку данных
+SELECT
+    -- Уникальный идентификатор заявки
+    r.request_id,
+    -- Краткое описание проблемы/запроса
+    r.title,
+    -- Объединение имени и фамилии пользователя в одну строку
+    CONCAT(u.first_name, ' ', u.last_name) AS user_name,
+    -- Объединение имени и фамилии инженера в одну строку (может быть NULL, если инженер не назначен)
+    CONCAT(e.first_name, ' ', e.last_name) AS engineer_name,
+    -- Название текущего статуса заявки (например, "Открыта", "В работе")
+    s.status_name,
+    -- Название категории проблемы (например, "Оборудование", "ПО")
+    c.category_name,
+    -- Дата и время создания заявки
+    r.created_at
+-- Основная таблица - заявки
+FROM requests r
+    -- Соединение с таблицей пользователей, чтобы получить данные о том, кто создал заявку
+    JOIN users u ON r.user_id = u.user_id
+    -- Левое соединение с таблицей инженеров, так как заявка может быть еще не назначена
+    LEFT JOIN engineers e ON r.engineer_id = e.engineer_id
+    -- Соединение с таблицей статусов для получения названия статуса
+    JOIN statuses s ON r.status_id = s.status_id
+    -- Соединение с таблицей категорий для получения названия категории
+    JOIN categories c ON r.category_id = c.category_id
+-- Сортировка результатов: сначала самые свежие заявки
+ORDER BY r.created_at DESC;
+
+
+
+SELECT
+    r.request_id,
+    r.title,
+    u.first_name,
+    u.last_name,
+    s.status_name
+FROM requests r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN statuses s ON r.status_id = s.status_id
+-- Фильтрация: выбираем только те заявки, статус которых НЕ "Выполнена" или "Закрыта"
+WHERE s.status_name NOT IN ('Выполнена', 'Закрыта');
+
+
+
+
+
+SELECT
+    -- Название статуса
+    s.status_name,
+    -- Подсчет количества заявок для каждого статуса
+    COUNT(r.request_id) as request_count
+FROM statuses s
+    -- Левое соединение, чтобы включить ВСЕ статусы, даже те, в которых нет заявок
+    LEFT JOIN requests r ON s.status_id = r.status_id
+-- Группировка по названию статуса для агрегации COUNT
+GROUP BY s.status_name
+-- Сортировка по убыванию количества заявок (самые заполненные статусы - сверху)
+ORDER BY request_count DESC;
+
+
+
+
+SELECT
+    e.first_name,
+    e.last_name,
+    e.specialization,
+    -- Подсчет количества активных заявок для каждого инженера
+    COUNT(r.request_id) as active_requests
+FROM engineers e
+    -- Левое соединение, чтобы включить всех инженеров, даже без заявок
+    LEFT JOIN requests r ON e.engineer_id = r.engineer_id
+    -- Соединение со статусами, чтобы фильтровать по статусу заявки
+    LEFT JOIN statuses s ON r.status_id = s.status_id
+-- Условие: заявки в статусе "Открыта" или "В работе", ИЛИ заявок нет вообще (r.request_id IS NULL)
+WHERE s.status_name IN ('Открыта', 'В работе') OR r.request_id IS NULL
+-- Группировка по инженеру (лучше использовать первичный ключ)
+GROUP BY e.engineer_id;
+
+
+
+
+
+SELECT
+    r.request_id,
+    r.title,
+    -- Название статуса, который был ДО изменения
+    os.status_name as old_status,
+    -- Название статуса, который стал ПОСЛЕ изменения
+    ns.status_name as new_status,
+    -- Дата и время изменения статуса
+    rh.changed_at,
+    -- Комментарий к изменению (например, "Принял в работу")
+    rh.comment
+FROM request_history rh
+    JOIN requests r ON rh.request_id = r.request_id
+    -- Соединение со статусами для получения названия СТАРОГО статуса
+    JOIN statuses os ON rh.old_status_id = os.status_id
+    -- Соединение со статусами для получения названия НОВОГО статуса
+    JOIN statuses ns ON rh.new_status_id = ns.status_id
+-- Фильтр: выбираем историю только для заявки с ID = 1
+WHERE r.request_id = 1
+-- Сортировка по времени изменения: от самого раннего к самому позднему
+ORDER BY rh.changed_at;
+
+
+
+
+
+SELECT
+    request_id,
+    title,
+    created_at
+FROM requests
+-- Фильтр: дата создания >= (текущее время - 7 дней)
+WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+-- Сортировка: сначала самые свежие
+ORDER BY created_at DESC;
+
+
+
+
+
+SELECT
+    r.request_id,
+    r.title,
+    r.description,
+    s.status_name,
+    r.created_at
+FROM requests r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN statuses s ON r.status_id = s.status_id
+-- Фильтр: ищем все заявки, созданные пользователем с указанным email
+WHERE u.email = 'i.petrov@company.com';
+
+
+
+
+SELECT
+    -- Вычисление среднего количества дней между созданием заявки и ее завершением
+    AVG(DATEDIFF(
+        -- Подзапрос: ищем дату перевода заявки в статус "Выполнена"
+        (SELECT changed_at FROM request_history
+         WHERE request_id = r.request_id AND new_status_id = (SELECT status_id FROM statuses WHERE status_name = 'Выполнена')
+         -- Берем самую последнюю запись о выполнении (на случай нескольких изменений)
+         ORDER BY changed_at DESC LIMIT 1),
+        -- Дата создания заявки (отсчет времени)
+        r.created_at
+    )) as avg_completion_days
+FROM requests r
+-- Фильтр: рассматриваем только те заявки, которые уже завершены
+WHERE r.status_id IN (SELECT status_id FROM statuses WHERE status_name IN ('Выполнена', 'Закрыта'));
+
+
+
+
+
+SELECT
+    c.category_name,
+    -- Подсчет общего количества заявок в каждой категории
+    COUNT(r.request_id) as total_requests
+FROM categories c
+    -- Левое соединение, чтобы показать ВСЕ категории, даже без заявок
+    LEFT JOIN requests r ON c.category_id = r.category_id
+-- Группировка по категории для агрегации COUNT
+GROUP BY c.category_id
+-- Сортировка: категории с наибольшим количеством заявок - сверху
+ORDER BY total_requests DESC;
+
+
+
+
+
+
+-- Обновление данных в таблице заявок
+UPDATE requests
+-- Установка нового статуса "В работе"
+SET status_id = (SELECT status_id FROM statuses WHERE status_name = 'В работе'),
+    -- Назначение инженера с фамилией "Фролов"
+    engineer_id = (SELECT engineer_id FROM engineers WHERE last_name = 'Фролов')
+-- Применяем изменения ТОЛЬКО к заявке с ID = 1
+WHERE request_id = 1;
