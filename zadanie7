@@ -1,0 +1,321 @@
+# Импорт необходимых библиотек
+import mysql.connector  # Библиотека для работы с MySQL
+from mysql.connector import Error  # Импорт класса ошибок MySQL
+import tkinter as tk  # Библиотека для создания GUI
+from tkinter import ttk, messagebox  # Виджеты tkinter и диалоговые окна
+from datetime import datetime  # Для работы с датой и временем
+
+class ServiceRequestsDB:
+    def __init__(self):
+        self.connection = None  # Инициализация соединения с БД
+        self.connect_to_db()  # Вызов метода подключения к БД
+        
+    def connect_to_db(self):
+        try:
+            # Установка соединения с базой данных MySQL
+            self.connection = mysql.connector.connect(
+                host='localhost',  # Адрес сервера БД
+                user='root',  # Имя пользователя БД
+                password='root',  # Пароль пользователя
+                database='dbkatya'  # Название базы данных
+            )
+            if self.connection.is_connected():  # Проверка успешности подключения
+                print("Успешное подключение к базе данных")  # Сообщение об успехе
+        except Error as e:  # Обработка ошибок подключения
+            print(f"Ошибка подключения: {e}")  # Вывод ошибки в консоль
+            messagebox.showerror("Ошибка", f"Не удалось подключиться к базе данных: {e}")  # Диалог ошибки
+
+    def execute_query(self, query, params=None):
+        try:
+            cursor = self.connection.cursor()  # Создание курсора для выполнения запросов
+            if params:  # Если есть параметры для запроса
+                cursor.execute(query, params)  # Выполнение параметризованного запроса
+            else:  # Если параметров нет
+                cursor.execute(query)  # Выполнение простого запроса
+            
+            # Проверка типа запроса (SELECT или другие)
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()  # Получение всех результатов для SELECT
+                cursor.close()  # Закрытие курсора
+                return result  # Возврат результатов
+            else:  # Для INSERT, UPDATE, DELETE
+                self.connection.commit()  # Подтверждение изменений в БД
+                cursor.close()  # Закрытие курсора
+                return True  # Возврат успешного выполнения
+        except Error as e:  # Обработка ошибок запроса
+            print(f"Ошибка запроса: {e}")  # Вывод ошибки в консоль
+            return False  # Возврат неудачи
+
+    def get_all_requests(self):
+        # SQL-запрос для получения всех заявок с соединением таблиц
+        query = """
+        SELECT r.request_id, r.title, u.first_name, u.last_name, 
+               e.first_name, e.last_name, s.status_name, c.category_name, r.created_at
+        FROM requests r  # Основная таблица заявок
+        LEFT JOIN users u ON r.user_id = u.user_id  # Левое соединение с пользователями
+        LEFT JOIN engineers e ON r.engineer_id = e.engineer_id  # Левое соединение с инженерами
+        JOIN statuses s ON r.status_id = s.status_id  # Внутреннее соединение со статусами
+        JOIN categories c ON r.category_id = c.category_id  # Внутреннее соединение с категориями
+        ORDER BY r.created_at DESC  # Сортировка по дате создания (новые сначала)
+        """
+        return self.execute_query(query)  # Выполнение запроса
+
+    def get_users(self):
+        # Запрос для получения всех пользователей
+        return self.execute_query("SELECT user_id, first_name, last_name FROM users")
+
+    def get_engineers(self):
+        # Запрос для получения всех инженеров
+        return self.execute_query("SELECT engineer_id, first_name, last_name FROM engineers")
+
+    def get_statuses(self):
+        # Запрос для получения всех статусов
+        return self.execute_query("SELECT status_id, status_name FROM statuses")
+
+    def get_categories(self):
+        # Запрос для получения всех категорий
+        return self.execute_query("SELECT category_id, category_name FROM categories")
+
+    def add_request(self, title, description, user_id, category_id):
+        # Запрос для добавления новой заявки
+        query = """
+        INSERT INTO requests (title, description, user_id, category_id)
+        VALUES (%s, %s, %s, %s)  # Параметры для вставки
+        """
+        return self.execute_query(query, (title, description, user_id, category_id))
+
+    def update_request_status(self, request_id, status_id, engineer_id=None):
+        # Запрос для обновления статуса заявки
+        if engineer_id:  # Если указан инженер
+            query = "UPDATE requests SET status_id = %s, engineer_id = %s WHERE request_id = %s"
+            return self.execute_query(query, (status_id, engineer_id, request_id))
+        else:  # Если инженер не указан
+            query = "UPDATE requests SET status_id = %s WHERE request_id = %s"
+            return self.execute_query(query, (status_id, request_id))
+
+    def get_request_history(self, request_id):
+        # Запрос для получения истории изменений заявки
+        query = """
+        SELECT os.status_name, ns.status_name, rh.changed_at, rh.comment
+        FROM request_history rh  # Таблица истории заявок
+        JOIN statuses os ON rh.old_status_id = os.status_id  # Старый статус
+        JOIN statuses ns ON rh.new_status_id = ns.status_id  # Новый статус
+        WHERE rh.request_id = %s  # Фильтр по ID заявки
+        ORDER BY rh.changed_at  # Сортировка по времени изменения
+        """
+        return self.execute_query(query, (request_id,))
+
+class ServiceRequestsApp:
+    def __init__(self, root):
+        self.root = root  # Главное окно приложения
+        self.root.title("Система учета заявок")  # Заголовок окна
+        self.root.geometry("1000x700")  # Размеры окна
+        
+        self.db = ServiceRequestsDB()  # Создание экземпляра класса работы с БД
+        self.create_widgets()  # Создание виджетов интерфейса
+        self.load_data()  # Загрузка начальных данных
+
+    def create_widgets(self):
+        # Создание системы вкладок
+        tab_control = ttk.Notebook(self.root)  # Создание контейнера вкладок
+        
+        # Создание вкладки для просмотра заявок
+        self.tab_requests = ttk.Frame(tab_control)
+        tab_control.add(self.tab_requests, text='Все заявки')  # Добавление вкладки
+        
+        # Создание вкладки для создания заявок
+        self.tab_create = ttk.Frame(tab_control)
+        tab_control.add(self.tab_create, text='Создать заявку')  # Добавление вкладки
+        
+        tab_control.pack(expand=1, fill='both')  # Размещение контейнера вкладок
+        
+        # Инициализация виджетов для каждой вкладки
+        self.create_requests_tab()  # Виджеты вкладки заявок
+        self.create_create_tab()  # Виджеты вкладки создания
+
+    def create_requests_tab(self):
+        # Создание таблицы для отображения заявок
+        columns = ('ID', 'Заголовок', 'Пользователь', 'Инженер', 'Статус', 'Категория', 'Дата создания')
+        self.tree = ttk.Treeview(self.tab_requests, columns=columns, show='headings', height=20)
+        
+        # Настройка заголовков и колонок таблицы
+        for col in columns:
+            self.tree.heading(col, text=col)  # Установка заголовков
+            self.tree.column(col, width=120)  # Установка ширины колонок
+        
+        self.tree.pack(fill='both', expand=True, padx=5, pady=5)  # Размещение таблицы
+        
+        # Создание панели управления статусами
+        control_frame = ttk.Frame(self.tab_requests)
+        control_frame.pack(fill='x', padx=5, pady=5)  # Размещение панели
+        
+        ttk.Label(control_frame, text="Изменить статус:").pack(side='left')  # Метка статуса
+        
+        self.status_var = tk.StringVar()  # Переменная для хранения выбранного статуса
+        self.status_combo = ttk.Combobox(control_frame, textvariable=self.status_var, state='readonly')
+        self.status_combo.pack(side='left', padx=5)  # Комбобокс выбора статуса
+        
+        ttk.Label(control_frame, text="Назначить инженера:").pack(side='left', padx=(20,0))  # Метка инженера
+        
+        self.engineer_var = tk.StringVar()  # Переменная для хранения выбранного инженера
+        self.engineer_combo = ttk.Combobox(control_frame, textvariable=self.engineer_var, state='readonly')
+        self.engineer_combo.pack(side='left', padx=5)  # Комбобокс выбора инженера
+        
+        # Кнопка обновления статуса
+        ttk.Button(control_frame, text="Обновить статус", 
+                  command=self.update_selected_request).pack(side='left', padx=5)
+        
+        # Кнопка обновления списка заявок
+        ttk.Button(control_frame, text="Обновить список", 
+                  command=self.load_data).pack(side='right', padx=5)
+        
+        # Привязка события выбора строки в таблице
+        self.tree.bind('<<TreeviewSelect>>', self.on_request_select)
+
+    def create_create_tab(self):
+        # Создание формы для новой заявки
+        form_frame = ttk.Frame(self.tab_create)
+        form_frame.pack(fill='both', expand=True, padx=20, pady=20)  # Размещение формы
+        
+        # Поле заголовка заявки
+        ttk.Label(form_frame, text="Заголовок заявки:").grid(row=0, column=0, sticky='w', pady=5)
+        self.title_entry = ttk.Entry(form_frame, width=50)  # Поле ввода заголовка
+        self.title_entry.grid(row=0, column=1, sticky='ew', pady=5, padx=5)
+        
+        # Поле описания заявки
+        ttk.Label(form_frame, text="Описание:").grid(row=1, column=0, sticky='nw', pady=5)
+        self.desc_text = tk.Text(form_frame, width=50, height=10)  # Текстовое поле описания
+        self.desc_text.grid(row=1, column=1, sticky='ew', pady=5, padx=5)
+        
+        # Выбор пользователя
+        ttk.Label(form_frame, text="Пользователь:").grid(row=2, column=0, sticky='w', pady=5)
+        self.user_var = tk.StringVar()  # Переменная для пользователя
+        self.user_combo = ttk.Combobox(form_frame, textvariable=self.user_var, state='readonly')
+        self.user_combo.grid(row=2, column=1, sticky='ew', pady=5, padx=5)
+        
+        # Выбор категории
+        ttk.Label(form_frame, text="Категория:").grid(row=3, column=0, sticky='w', pady=5)
+        self.category_var = tk.StringVar()  # Переменная для категории
+        self.category_combo = ttk.Combobox(form_frame, textvariable=self.category_var, state='readonly')
+        self.category_combo.grid(row=3, column=1, sticky='ew', pady=5, padx=5)
+        
+        # Кнопка создания заявки
+        ttk.Button(form_frame, text="Создать заявку", 
+                  command=self.create_request).grid(row=4, column=1, sticky='e', pady=10)
+        
+        form_frame.columnconfigure(1, weight=1)  # Настройка адаптивности колонки
+
+    def load_data(self):
+        # Очистка таблицы перед загрузкой новых данных
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        # Загрузка заявок из базы данных
+        requests = self.db.get_all_requests()
+        for req in requests:  # Добавление каждой заявки в таблицу
+            self.tree.insert('', 'end', values=req)
+        
+        # Загрузка данных в комбобоксы
+        self.load_combobox_data()
+
+    def load_combobox_data(self):
+        # Загрузка статусов в комбобокс
+        statuses = self.db.get_statuses()
+        self.status_combo['values'] = [f"{s[0]} - {s[1]}" for s in statuses]  # Формат: "ID - Название"
+        
+        # Загрузка инженеров в комбобокс
+        engineers = self.db.get_engineers()
+        self.engineer_combo['values'] = [""] + [f"{e[0]} - {e[1]} {e[2]}" for e in engineers]  # Пустой вариант + список
+        
+        # Загрузка пользователей для создания заявки
+        users = self.db.get_users()
+        self.user_combo['values'] = [f"{u[0]} - {u[1]} {u[2]}" for u in users]
+        
+        # Загрузка категорий для создания заявки
+        categories = self.db.get_categories()
+        self.category_combo['values'] = [f"{c[0]} - {c[1]}" for c in categories]
+
+    def on_request_select(self, event):
+        # Обработчик выбора заявки в таблице
+        selection = self.tree.selection()  # Получение выбранной строки
+        if selection:  # Если есть выбор
+            item = self.tree.item(selection[0])  # Получение данных строки
+            request_id = item['values'][0]  # Получение ID заявки
+            self.show_request_history(request_id)  # Показать историю заявки
+
+    def show_request_history(self, request_id):
+        # Показать историю изменений заявки
+        history = self.db.get_request_history(request_id)  # Получение истории
+        if history:  # Если история есть
+            history_text = "История изменений:\n"  # Заголовок истории
+            for hist in history:  # Для каждой записи истории
+                history_text += f"{hist[2]}: {hist[0]} -> {hist[1]}"  # Дата и изменение статуса
+                if hist[3]:  # Если есть комментарий
+                    history_text += f" ({hist[3]})"  # Добавление комментария
+                history_text += "\n"  # Перевод строки
+            messagebox.showinfo("История заявки", history_text)  # Показать диалог с историей
+
+    def update_selected_request(self):
+        # Обновление статуса выбранной заявки
+        selection = self.tree.selection()  # Получение выбранной строки
+        if not selection:  # Если ничего не выбрано
+            messagebox.showwarning("Предупреждение", "Выберите заявку для обновления")
+            return
+            
+        item = self.tree.item(selection[0])  # Получение данных выбранной заявки
+        request_id = item['values'][0]  # ID заявки
+        
+        status_text = self.status_var.get()  # Выбранный статус
+        engineer_text = self.engineer_var.get()  # Выбранный инженер
+        
+        if not status_text:  # Проверка выбора статуса
+            messagebox.showwarning("Предупреждение", "Выберите статус")
+            return
+        
+        status_id = int(status_text.split(' - ')[0])  # Извлечение ID статуса из строки
+        engineer_id = None  # Инициализация ID инженера
+        
+        if engineer_text:  # Если инженер выбран
+            engineer_id = int(engineer_text.split(' - ')[0])  # Извлечение ID инженера
+        
+        # Обновление статуса в базе данных
+        if self.db.update_request_status(request_id, status_id, engineer_id):
+            messagebox.showinfo("Успех", "Статус заявки обновлен")  # Сообщение об успехе
+            self.load_data()  # Обновление данных
+            self.status_var.set('')  # Очистка выбора статуса
+            self.engineer_var.set('')  # Очистка выбора инженера
+        else:
+            messagebox.showerror("Ошибка", "Не удалось обновить статус")  # Сообщение об ошибке
+
+    def create_request(self):
+        # Создание новой заявки
+        title = self.title_entry.get().strip()  # Получение заголовка
+        description = self.desc_text.get("1.0", tk.END).strip()  # Получение описания
+        user_text = self.user_var.get()  # Выбранный пользователь
+        category_text = self.category_var.get()  # Выбранная категория
+        
+        # Проверка заполнения всех полей
+        if not all([title, description, user_text, category_text]):
+            messagebox.showwarning("Предупреждение", "Заполните все поля")
+            return
+        
+        # Извлечение ID из строк формата "ID - Название"
+        user_id = int(user_text.split(' - ')[0])
+        category_id = int(category_text.split(' - ')[0])
+        
+        # Добавление заявки в базу данных
+        if self.db.add_request(title, description, user_id, category_id):
+            messagebox.showinfo("Успех", "Заявка успешно создана")  # Сообщение об успехе
+            # Очистка формы
+            self.title_entry.delete(0, tk.END)
+            self.desc_text.delete("1.0", tk.END)
+            self.user_var.set('')
+            self.category_var.set('')
+            self.load_data()  # Обновление списка заявок
+        else:
+            messagebox.showerror("Ошибка", "Не удалось создать заявку")  # Сообщение об ошибке
+
+if __name__ == "__main__":
+    root = tk.Tk()  # Создание главного окна
+    app = ServiceRequestsApp(root)  # Создание экземпляра приложения
+    root.mainloop()  # Запуск главного цикла обработки событий
